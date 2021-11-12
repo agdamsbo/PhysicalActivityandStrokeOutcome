@@ -188,8 +188,10 @@ dta <- dta %>% na.omit  # Only keeping correctly coded cases
 
 Adding term and subcat
 ```{r warning=FALSE}
+# Subcategory name is the combined soc_term and adj_subcat for additional details in the final report.
 for (i in 1:nrow(dta)){
   dta$term[i]<-soc_code$soc_term[soc_code$meddra==dta$soc[i]]
+  dta$subcat[i]<-paste0(dta$term[i],": ",adj_tbl$subcat[adj_tbl$code==dta$adj_code[i]])
 }
 ```
 
@@ -198,7 +200,7 @@ for (i in 1:nrow(dta)){
 ## Creating specified data frame
 ```{r}
 df<-data.frame(subjid=dta$rnumb,
-               term=dta$term,
+               term=dta$subcat,
                soc=as.integer(dta$soc),
                serious=dta$serious,
                related=dta$related_bin,
