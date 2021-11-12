@@ -1,0 +1,100 @@
+---
+title: "predictive_model"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Data
+```{r}
+library(caret)
+library(pROC)
+library(daDoctoR)
+```
+
+Import
+```{r}
+trainData<-read.csv("/Users/au301842/PhysicalActivityandStrokeOutcome/data/trainData.csv",)
+testData<-read.csv("/Users/au301842/PhysicalActivityandStrokeOutcome/data/testData.csv",)
+```
+
+
+# Prediction
+Inspiration: https://stackoverflow.com/questions/30366143/how-to-compute-roc-and-auc-under-roc-after-training-using-caret-in-r and https://www.machinelearningplus.com/machine-learning/caret-package/
+
+## Early visualisation
+
+```{r}
+featurePlot(x = trainData %>% select(!matches("pase_drop")),
+            y = factor(trainData$pase_drop), 
+            plot = "box",
+            strip=strip.custom(par.strip.text=list(cex=.7)),
+            scales = list(x = list(relation="free"), 
+                          y = list(relation="free")))
+
+featurePlot(x = trainData %>% select(!matches("pase_drop")),
+            y = factor(trainData$pase_drop), 
+            plot = "density",
+            strip=strip.custom(par.strip.text=list(cex=.7)),
+            scales = list(x = list(relation="free"), 
+                          y = list(relation="free")))
+```
+
+
+```{r}
+subsets <- c(1:10, 15, 18,33)
+
+ctrl <- rfeControl(functions = rfFuncs,
+                   method = "repeatedcv",
+                   repeats = 5,
+                   verbose = FALSE)
+
+lmProfile <- rfe(x = trainData %>% select(!matches("pase_drop")), 
+                 y = trainData$pase_drop,
+                 sizes = subsets,
+                 rfeControl = ctrl)
+
+lmProfile
+```
+
+
+```{r}
+set.seed(1000)
+
+forest.model <- train(pase_drop ~., trainData)
+
+result.predicted.prob <- predict(forest.model, testData, type="prob") # Prediction
+
+result.roc <- roc(factor(testData$pase_drop), result.predicted.prob$no) # Draw ROC curve. 
+
+plot(result.roc, print.thres="best", print.thres.best.method="closest.topleft")
+
+result.coords <- coords(result.roc, "best", best.method="closest.topleft", ret=c("threshold", "accuracy"))
+print(result.coords)#to get threshold and accuracy
+```
+
+```{r}
+library(MLeval)
+
+myTrainingControl <- trainControl(method = "cv", 
+                                  number = 10, 
+                                  savePredictions = TRUE, 
+                                  classProbs = TRUE, 
+                                  verboseIter = TRUE)
+
+randomForestFit = train(x = trainData[,1:32], 
+                        y = as.factor(trainData$pase_drop), 
+                        method = "rf", 
+                        trControl = myTrainingControl, 
+                        preProcess = c("center","scale"), 
+                        ntree = 50)
+
+x <- evalm(randomForestFit)
+
+x$roc
+
+x$stdres
+```
+
