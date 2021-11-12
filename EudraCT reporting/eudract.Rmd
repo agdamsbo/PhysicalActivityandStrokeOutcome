@@ -1,0 +1,238 @@
+---
+title: "TALOS eudract AE reporting - example"
+author: "AGDamsbo"
+date: "Knitted: `r format(Sys.time(), '%d %B %Y')`"
+output:
+  pdf_document: default
+  html_document: default
+toc: TRUE
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
+```
+
+# Intro
+
+This is the data management workflow for the reporting of AEs in the TALOS trial to the EudraCT database.
+A dedicated package is used to format data after a longer process of editing data to conform.
+The source data is not perfectly formatted, and during the process, a few manual steps are necessary.
+- Advise number one: Make sure to format data according to the desired format for reporting.
+
+This is "page" 2 of 2. All cleaning is performed in "TALOS AE cleaning.Rmd"
+
+
+```{r}
+setwd("/Volumes/Data/TALOS/")
+```
+
+```{r}
+library(haven)
+library(dplyr)
+# https://www.rdocumentation.org/packages/eudract/versions/0.9.3
+library(eudract)
+```
+
+# Data import
+
+Data set
+```{r}
+d<-as_factor(read_dta("/Volumes/Data/TALOS/talos_ae_clean.dta"))
+write.csv(head(d,100),"sample_ae.csv")
+d<-read.csv("sample_ae.csv")
+```
+
+## Modified trial-specific adjudication list with added maddra codes from eudract
+```{r}
+library(readxl)
+adj_tbl<-read_xlsx("adjudication_table.xlsx")
+# write.csv(soc_code,"soc_code.csv") # Export af soc_code til manuel kodning af oprindelig Adjudication List
+head(adj_tbl)
+head(soc_code)
+```
+
+# Formatting to EUDRACT
+```{r}
+# Included data example in the eudract-package
+head(safety)
+```
+
+## Adding columns according to safety-format
+
+### Fatal outcome
+The "d$status" contains final status of every event instance, with those marked Dødelig being used. 
+The other option would be to code according to adj_code, but the "d$status" was GCP monitored and is used.
+```{r}
+# for (i in 1:nrow(d)){
+#   d$fatal[i]<-ifelse(str_contains(d$description[i],adj_tbl$code[adj_tbl$soc_term=="Death"],logic = "or"),1,0)
+#   }
+
+d$fatal<-ifelse(d$status=="Dødelig",1,0)
+table(factor(d$fatal),factor(d$rtreat))
+```
+
+### Related
+All events coded with either of the three categories a considered related in this binary form.
+```{r}
+d$related_bin<-ifelse(d$related=="Mulig"|
+                          d$related=="Sandsynlig"|
+                          d$related=="Afgjort relateret",
+                        1,0)
+```
+
+### Serious
+Only SAEs are occuring, no SAR or SUSAR
+```{r}
+ser<-c("SAE","SAR","SUSAR")
+d$serious<-ifelse(d$CLFint %in% ser,1,0)
+```
+
+### Randomisation
+Group naming according to groups defined on the EudraCT page.
+```{r}
+d$group<-ifelse(d$rtreat=="Placebo","Placebo","Active")
+```
+
+
+### SOC kode og term/subcat
+```{r}
+ls<-list()
+for (i in 1:nrow(d)){
+  # Text string split at ":", " ", "+" or "(" and constrained to first three digits. 
+  # The last step as a security against a missing " " following the adjudication code or similar.
+  v<-substr(unlist(strsplit(d$description[i],"[: +(]")),1,3) 
+  # vector elements contained in adj_tbl$code are subset and added to list
+  ls[[paste0("index", i)]] <- grep(paste(adj_tbl$code,collapse="|"),v,value = TRUE)
+}
+```
+
+Splitting each list element into different columns, length(ls) equals nrow(d)
+```{r}
+for (i in 1:length(ls)){
+  # Subsets liste efter navngivning i forrige loop
+  v<-ls[[paste0("index", i)]]            
+  for (j in 1:length(v)){
+    # Føjer til eksisterende, tilføjer ekstra kolonner ved behov
+    d[i,paste0("adj_code_", j)]<-v[j]  
+  }
+}
+```
+
+#### Death only event subset and recoding - manual work
+Originally a "continuation" variable was also included in the export for more information on the event, however, this variable has been excluded from the data set.
+```{r}
+## If only 1 code, it is in adj_code_1, test if this code is any categorised as "Death" 
+# subset_death<-d[d$adj_code_1 %in% adj_tbl$code[adj_tbl$soc_term=="Death"] &  
+#                     lengths(ls)==1,  ## Redundant test, that only one code was used
+#                   c("description","continuation","event_id")]
+## Adds an extra column for adding alternative code manually
+# subset_death$add_code<-c("")
+# write.csv(subset_death,"subset_death.csv")
+```
+
+Hand coded data set imported again
+```{r}
+head(subset_death_coded<-read_xlsx("subset_death_coded.xlsx")) ## Eight (8) cases, 5 had a new code added
+## event_id 335 were not recoded, as two events (also event_id 333) are already created for this same death...
+for (i in 1:nrow(d)){
+  for (j in 1:nrow(subset_death_coded)){
+    d$adj_code_2[i]<-ifelse(d$event_id[i]==subset_death_coded$event_id[j],
+                              subset_death_coded$add_code[j],d$adj_code_2[i])
+  }
+}
+```
+
+
+#### Subset events coded with "801"
+```{r}
+# subset_801<-d[grepl("801",d$description),c("description","continuation","event_id")]
+# write.csv(subset_801,"subset_801.csv")
+```
+
+Every event has been coded with soc_code alternative to 801 or NONE if deemed irrelevant based on other codes at same event.
+```{r}
+head(alt_801<-read_excel("subset_801_alt.xlsx") %>% na.omit)
+```
+
+### Converting to new, long data.frame
+All events with bleeding (severity) or death are excluded. Death counts will be added later.
+```{r}
+library(tidyr)
+# dput(names(d))
+dta<-pivot_longer(select(d,!matches(c("description", "expected", "status","CLFint"))),
+                  starts_with("adj_code_"),
+                  names_to="adj_index",
+                  values_to = "adj_code") %>%   # Pivotting to long format
+  na.omit %>%  # Omitting NAs, result is complete case only
+  filter(adj_code %in% adj_tbl$code[adj_tbl$soc_term!="Death"&adj_tbl$soc_term!="Bleeding"]) 
+# Excluding events marked with Death or Bleeding, as these are additional codes not coresponding to soc_code terms
+head(dta)
+```
+
+### Matching adj_code to soc_code
+Adding soc_codes and manually coded alternative categories for 801 codes. 
+```{r warning=FALSE}
+for (i in 1:nrow(dta)){
+  dta$soc[i]<-adj_tbl$meddra[adj_tbl$code==dta$adj_code[i]]
+  for (j in 1:nrow(alt_801)){
+    dta$soc[i]<-ifelse(dta$event_id[i]==alt_801$event_id[j]&dta$adj_code[i]=="801",
+                       alt_801$alt_801[j],dta$soc[i])
+  }
+}
+```
+
+Few were not coded, omitting NAs.
+```{r}
+dta <- dta %>% na.omit  # Only keeping correctly coded cases
+```
+
+Adding term and subcat
+```{r warning=FALSE}
+for (i in 1:nrow(dta)){
+  dta$term[i]<-soc_code$soc_term[soc_code$meddra==dta$soc[i]]
+}
+```
+
+# Configuring XML
+
+## Creating specified data frame
+```{r}
+df<-data.frame(subjid=dta$rnumb,
+               term=dta$term,
+               soc=as.integer(dta$soc),
+               serious=dta$serious,
+               related=dta$related_bin,
+               fatal=dta$fatal,
+               group=dta$group)
+head(df)
+```
+
+## Handling Deaths
+```{r}
+# Deaths in named integer vector
+# ae_deaths<-table(df$fatal,df$group)[2,] # No deaths included in the sample data set
+# These are all the deaths observed within 6 months after randomisation, eg after intention-to-treat
+all_deaths<-c("Active"=16,"Placebo"=12) 
+excess_death<-all_deaths  #-ae_deaths
+```
+
+## Creating safety summary
+```{r}
+safe_sum<-safety_summary(data=df,
+               exposed=c("Active"=319,"Placebo"=323),
+               excess_deaths=excess_death)
+```
+
+```{r}
+simple <- tempfile(fileext = ".xml")
+eudract <- tempfile(fileext = ".xml")
+simple_safety_xml(safe_sum, simple)
+```
+
+
+```{r}
+eudract_convert(input=simple,
+                output=eudract)
+```
+
+
